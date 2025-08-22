@@ -1,0 +1,1076 @@
+/***** =================== 常數 =================== *****/
+// 雲端硬碟資料夾
+const CSV_FOLDER_ID          = '13EtcaTzd2wApVbrSxkWQNgcKwMtuRiME';       // 假日CSV來源
+const CAL_FOLDER_ID          = '1drhxrK1Du2IwRAIywEtKfjByXHHyu0Hc';       // 日曆輸出資料夾
+const ROSTER_FOLDER_ID       = '1kTBYT75SmGZO976UpICWB_5rwRP8qA8d';       // 班表輸出資料夾
+const MIGRANT_OUT_FOLDER_ID  = '1JsylreRZdl9t_NZpZoOoaaLps7zFm1Nx';       // 移工排班輸出資料夾
+
+// 工作表名稱
+const TARGET_SHEET  = '假日清單';
+const DB_SHEET      = '_DB_ALL';
+const PEOPLE_SHEET  = '人員設定';
+const STATS_SHEET   = '統計';
+const MIGRANT_SHEET = '移工排班';
+
+// 設定頁儲存格（備註移到年月下方）
+const YEAR_CELL   = '設定!A2';   // 年（114/115 或 2025…）
+const MONTH_CELL  = '設定!B2';   // 月（1~12）
+const STATUS_CELL = '設定!A4';   // 狀態列
+const MOBILE_CELL = '設定!D3';   // TRUE=手機模式
+const NOTE_CELL   = '設定!A6';   // 備註（同步到班表/日曆；放在 A6，合併 A6:D10）
+
+// 需求數（國定/補假需要上班的台灣人數；週六由移工排班是否有人上班決定 2/3）
+const DUTY_SAT_CELL = '設定!C2';  // 保留（不主用）
+const DUTY_NAT_CELL = '設定!D2';  // 國定/補假需上班人數（留空=全部上班）
+
+// 命名
+const ROSTER_PREFIX  = '班表_';
+const CAL_PREFIX     = '日曆_';
+const MIGRANT_PREFIX = '移工排班_';
+
+// 視覺
+const COLOR_HEAD_BG = '#111111', COLOR_HEAD_FG = '#ffffff', COLOR_BAR_BG  = '#f5f7fa';
+const COLOR_GUODING = '#FDE2E1', COLOR_BUJIA   = '#E1F0FF', COLOR_BUBAN   = '#FFEAD6', COLOR_SAT = '#EEEEEE';
+const COLOR_WORK    = '#C8E6C9', COLOR_OFF     = '#ECEFF1';
+
+// 其他
+const BUFFER_ROWS = 60;
+
+
+/***** =================== 選單 =================== *****/
+function onOpen(){
+  SpreadsheetApp.getUi()
+    .createMenu('假日 / 班表')
+    .addItem('一鍵初始化（授權/樣式/DB）', 'OneClick_Setup')
+    .addSeparator()
+    .addItem('建立/重建 DB（合併所有 CSV）', 'Build_DB_All')
+    .addItem('假日清單→套公式（全年顯示）', 'Enable_Formula_Mode_YearOnly')
+    .addSeparator()
+    .addItem('建立/重建 人員設定頁', 'People_InitSheet')
+    .addItem('建立/重建 移工排班頁', 'Migrant_InitSheet')
+    .addSeparator()
+    .addItem('生成 班表（讀移工排班）', 'Roster_Generate_Fair')
+    .addItem('生成 日曆（一～日）', 'Calendar_BuildLocal')
+    .addSeparator()
+    .addItem('輸出：班表→資料夾（覆蓋）', 'Export_Roster_ToDrive')
+    .addItem('輸出：日曆→資料夾（覆蓋）', 'Export_Calendar_ToDrive')
+    .addItem('輸出：移工排班→資料夾（覆蓋）', 'Export_Migrant_ToDrive')
+    .addItem('一鍵輸出：班表+日曆', 'Export_Both_ToDrive')
+    .addSeparator()
+    .addItem('統計：更新（年 或 年+月）', 'Stats_Update')
+    .addSeparator()
+    .addItem('啟用即時僅同步備註', 'Setup_Auto')   // 只同步備註，不自動重算
+    .addItem('停用即時同步', 'Remove_Auto')
+    .addToUi();
+}
+
+
+/***** =================== 一鍵初始化 =================== *****/
+function OneClick_Setup(){
+  Grant_Permissions();                 // 首次授權
+  Settings_ApplyLayout();              // 設定頁（乾淨、含快速操作、備註）
+  Init_HolidaySheet_Once();            // 假日清單樣式
+  Build_DB_All();                      // 合併 CSV → _DB_ALL（含自動補每年週六）
+  Enable_Formula_Mode_YearOnly();      // 假日清單 = 全年公式
+  People_InitSheet();                  // 人員設定（國定假日Y/N）
+  Migrant_InitSheet();                 // 移工排班（簡化版）
+  toast_('初始化完成：請先在「人員設定」「移工排班」填好，再到「設定」快速操作輸入 GO 生成班表/日曆');
+}
+
+
+/***** =============== 設定頁（乾淨 + 快速操作 + 美化備註） =============== *****/
+function Settings_ApplyLayout(){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('設定') || ss.insertSheet('設定');
+
+  // 保留舊值
+  const oldYear   = _numOrEmpty_(sh.getRange('A2').getValue());
+  const oldMonth  = _numOrEmpty_(sh.getRange('B2').getValue());
+  const oldMobile = !!sh.getRange(MOBILE_CELL).getValue();
+  const oldNote   = String(sh.getRange(NOTE_CELL).getValue() || '');
+
+  sh.clear().setHiddenGridlines(true).setTabColor('#1f1f1f');
+
+  // 標頭
+  sh.getRange(1,1,1,10).setBackground(COLOR_HEAD_BG);
+  sh.getRange(1,1).setValue('設定').setFontColor(COLOR_HEAD_FG).setFontWeight('bold');
+
+  // 左側主設定
+  sh.getRange(1,1,1,4)
+    .setValues([['年份','月份','例假日需上班(台灣)','國定/補假需上班']])
+    .setFontColor(COLOR_HEAD_FG).setFontWeight('bold');
+
+  sh.getRange(2,1,1,4).setBackground('#f5f7fa').setBorder(true,true,true,true,false,false);
+  sh.getRange('B2').setDataValidation(SpreadsheetApp.newDataValidation().requireNumberBetween(1,12).build());
+
+  sh.getRange('D3').setValue(oldMobile ? true : false);
+  sh.getRange('C3:D3').merge().setValue('手機模式（TRUE=大字大格）').setFontColor('#666');
+
+  // 狀態列
+  sh.getRange('A4:B4').merge().setBackground('#fafafa').setBorder(true,true,true,true,false,false);
+  ApplyStatusFormula_YearOnly_();
+
+  // 右側：快速操作（輸入 GO 觸發）
+  sh.getRange('F1').setValue('快速操作').setFontWeight('bold').setFontColor(COLOR_HEAD_FG);
+  sh.getRange('F2:H2').setValues([['▶ 生成班表','▶ 生成日曆','▶ 生成班表+日曆']]);
+  sh.getRange('F3:H3').setValues([['在上方格輸入 GO','在上方格輸入 GO','在上方格輸入 GO']]).setFontColor('#666');
+  ['F2','G2','H2'].forEach(a1=>{
+    sh.getRange(a1).setBackground('#fff').setBorder(true,true,true,true,false,false)
+      .setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['GO'], true).setAllowInvalid(true).build())
+      .setNote('輸入 GO 後按 Enter 觸發對應動作，結束會自動清空');
+  });
+
+  // 備註（移到 A6；合併 A6:D10）
+  sh.getRange('A5:D5').merge().setValue('📝 備註（會印在班表與日曆底部）').setFontWeight('bold');
+  const noteRange = sh.getRange('A6:D10'); noteRange.merge();
+  sh.getRange(NOTE_CELL).setValue(oldNote);
+  noteRange.setBackground('#fafafa').setWrap(true)
+    .setBorder(true,true,true,true,false,false)
+    .setHorizontalAlignment('left').setVerticalAlignment('top');
+  sh.setRowHeight(6, 80); sh.setRowHeight(7, 80); sh.setRowHeight(8, 80); sh.setRowHeight(9, 80); sh.setRowHeight(10, 80);
+
+  // 欄寬調整（乾淨不亂）
+  sh.setColumnWidths(1,1,100); sh.setColumnWidths(2,1,80);
+  sh.setColumnWidth(3,150); sh.setColumnWidth(4,150);
+  sh.setColumnWidth(5,520);
+  sh.setColumnWidth(6,140); sh.setColumnWidth(7,140); sh.setColumnWidth(8,160);
+
+  // 使用說明
+  sh.getRange('E7').setValue('說明：\n1) 先填人員設定（順序=顯示順序）與移工排班（預設上班，選單可改休假）。\n2) 到右上快速操作輸入 GO 生成班表/日曆。\n3) 只有此處備註改動會即時同步。')
+    .setFontColor('#666').setWrap(true);
+
+  if (oldYear)  sh.getRange('A2').setValue(oldYear);
+  if (oldMonth) sh.getRange('B2').setValue(oldMonth);
+  toast_('設定分頁完成（備註已移到年月下方）');
+}
+
+
+/***** =============== 假日清單（固定色碼區 + 全年） =============== *****/
+function Init_HolidaySheet_Once(){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(TARGET_SHEET) || ss.insertSheet(TARGET_SHEET);
+
+  sh.clear().setHiddenGridlines(true).setTabColor('#1f1f1f');
+
+  sh.getRange(1,1,1,9).setBackground(COLOR_HEAD_BG);
+  sh.getRange('A1').setValue('假日 / 補假 / 補班 / 週六（全年）')
+    .setFontWeight('bold').setFontColor(COLOR_HEAD_FG);
+  sh.getRange('B1').setValue('—').setFontColor(COLOR_HEAD_FG);
+  sh.getRange('A2').setValue('來源：_DB_ALL　更新：—').setFontColor('#444');
+
+  sh.getRange(3,1,1,3).setValues([['日期','類型(國定/補假/補班/週六)','說明']])
+    .setFontWeight('bold').setBackground(COLOR_BAR_BG).setBorder(true,true,true,true,true,true);
+
+  sh.setFrozenRows(3);
+  sh.setColumnWidth(1,120); sh.setColumnWidth(2,160); sh.setColumnWidth(3,600);
+
+  drawLegend_Fixed_(sh);
+  applyTypeValidation_(sh, 1);
+  applyColorRules_(sh, 1);
+  try { sh.getRange(3,1,2,3).createFilter(); } catch(_) {}
+
+  toast_('假日清單就緒');
+}
+function drawLegend_Fixed_(sh){
+  sh.getRange('H1:I1').merge().setValue('色碼說明').setFontWeight('bold').setHorizontalAlignment('left');
+  [['國定',COLOR_GUODING],['補假',COLOR_BUJIA],['補班',COLOR_BUBAN],['週六',COLOR_SAT]].forEach((it,i)=>{
+    const r=2+i; sh.getRange(r,8).setValue(it[0]); sh.getRange(r,9).setValue(' ').setBackground(it[1]).setBorder(true,true,true,true,false,false);
+  });
+}
+
+
+/***** =============== DB：合併 CSV（含自動補週六） =============== *****/
+function Build_DB_All(){
+  const folder = getFolderSafe_(CSV_FOLDER_ID); if (!folder) return;
+  const data = [], yearSet = {}, dedup = {};
+  const it = folder.getFiles(); let cnt=0;
+  while (it.hasNext()){
+    const f = it.next(); const m = /假日清單_(20\d{2})\.csv$/i.exec(f.getName()); if (!m) continue; cnt++;
+    const text = f.getBlob().getDataAsString('UTF-8').replace(/^\uFEFF/,'');
+    const csv  = Utilities.parseCsv(text); if (!csv || csv.length<2) continue;
+    const h = csv[0].map(x=>String(x).trim());
+    const iD=h.indexOf('日期'), iT=h.findIndex(x=>x==='類型'||x.startsWith('類型')), iS=h.indexOf('說明');
+    if (iD===-1 || iT===-1 || iS===-1) continue;
+    for (let r=1;r<csv.length;r++){
+      const row=csv[r]; if(!row||!row.length) continue;
+      const dStr=String(row[iD]).trim(); if(!dStr) continue;
+      const dObj=toDateObj_(dStr); if(!dObj) continue;
+      const typ=String(row[iT]||'').trim(), note=String(row[iS]||'').trim(), y=dObj.getFullYear();
+      yearSet[y]=1; const key=fmtYMD_(dObj)+'|'+typ+'|'+note;
+      if(dedup[key]) continue; dedup[key]=1;
+      data.push([dObj, typ, note, y]);
+    }
+  }
+  // 自動補週六
+  Object.keys(yearSet).forEach(yStr=>{
+    const y=Number(yStr); let d=new Date(y,0,1);
+    while (d.getFullYear()===y){
+      if (d.getDay()===6){
+        const key=fmtYMD_(d)+'|週六|例假日';
+        if(!dedup[key]){ dedup[key]=1; data.push([new Date(d),'週六','例假日',y]); }
+      }
+      d.setDate(d.getDate()+1);
+    }
+  });
+  data.sort((a,b)=> a[0]-b[0]);
+
+  const ss=SpreadsheetApp.getActive();
+  let db=ss.getSheetByName(DB_SHEET) || ss.insertSheet(DB_SHEET);
+  db.clear();
+  db.getRange(1,1,1,4).setValues([['日期','類型','說明','年']]).setFontWeight('bold');
+  if(data.length) db.getRange(2,1,data.length,4).setValues(data);
+  db.getRange(2,1,Math.max(1,data.length),1).setNumberFormat('yyyy-mm-dd');
+  db.hideSheet();
+  toast_(`DB 完成：合併 ${cnt} 檔，總列 ${data.length}`);
+}
+
+
+/***** =============== 假日清單：全年公式（安全） =============== *****/
+function Enable_Formula_Mode_YearOnly(){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(TARGET_SHEET) || ss.insertSheet(TARGET_SHEET);
+  const last=sh.getLastRow(); if(last>=4) sh.getRange(4,1,last-3,3).clearContent();
+
+  const fData = `
+=LET(
+  yTxt, ${YEAR_CELL},
+  yRaw, IFERROR(VALUE(yTxt),""),
+  y, IF(yRaw="","", IF(yRaw<1911, yRaw+1911, yRaw)),
+  IF(yRaw="",
+    "",
+    IFERROR(QUERY(${DB_SHEET}!A:D,
+      "select A,B,C where D="&y&" order by A label A '', B '', C ''",1),
+    {})
+  )
+)`.trim();
+  sh.getRange('A4').setFormula(fData);
+
+  const fTitle = `
+=LET(
+  yTxt, ${YEAR_CELL},
+  yRaw, IFERROR(VALUE(yTxt),""),
+  y, IF(yRaw="","", IF(yRaw<1911, yRaw+1911, yRaw)),
+  roc, IF(yRaw="","", y-1911),
+  IF(yRaw="","—","民國 "&roc&" / 西元 "&y)
+)`.trim();
+  sh.getRange('B1').setFormula(fTitle).setFontColor(COLOR_HEAD_FG);
+
+  sh.getRange('A2').setFormula(`="來源：(DB)　更新："&TEXT(NOW(),"yyyy-mm-dd HH:mm")`).setFontColor('#444');
+
+  applyTypeValidation_(sh, 1);
+  applyColorRules_(sh, 1);
+  ApplyStatusFormula_YearOnly_();
+  toast_('假日清單（全年）已套公式');
+}
+
+
+/***** =============== 人員設定（保留舊資料；空白才放預設） =============== *****/
+function People_InitSheet(){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(PEOPLE_SHEET);
+
+  // 取舊資料
+  let oldRows = [];
+  if (sh) {
+    const last = sh.getLastRow();
+    if (last >= 2) {
+      oldRows = sh.getRange(2, 1, last - 1, 6).getValues()
+        .filter(r => String(r[1]).trim() !== '')
+        .map(r => ([
+          r[0] === true,
+          String(r[1]).trim(),
+          (String(r[2]).trim() || '台灣'),
+          yn_(r[3]) ? 'Y' : 'N',  // 接受多種值
+          yn_(r[4]) ? 'Y' : 'N',
+          String(r[5] || '').trim()
+        ]));
+    }
+  }
+
+  // 若無任何資料 → 放一次預設名單
+  if (!oldRows.length) {
+    oldRows = [
+      [true,'王伯宇','台灣','Y','Y',''],
+      [true,'賴娟吟','台灣','Y','Y',''],
+      [true,'吳怡瑟','台灣','Y','Y',''],
+      [true,'林文義','台灣','N','Y',''],
+      [true,'建倫','移工','Y','Y',''],
+      [true,'傑斯','移工','Y','Y','']
+    ];
+  }
+
+  if (!sh) sh = ss.insertSheet(PEOPLE_SHEET);
+  sh.clear().setHiddenGridlines(true).setTabColor('#1f1f1f');
+
+  sh.getRange(1,1,1,6).setValues([['啟用','姓名','群組(台灣/移工)','週六上班(Y/N)','國定假日(Y/N)','備註']])
+    .setBackground(COLOR_BAR_BG).setFontWeight('bold').setBorder(true,true,true,true,true,true);
+  sh.setFrozenRows(1);
+
+  sh.setColumnWidth(1,70);  sh.setColumnWidth(2,140);
+  sh.setColumnWidth(3,120); sh.setColumnWidth(4,130);
+  sh.setColumnWidth(5,140); sh.setColumnWidth(6,220);
+
+  sh.getRange('A2:A500').insertCheckboxes();
+  sh.getRange('C2:C500').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['台灣','移工'], true).build());
+  sh.getRange('D2:D500').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['Y','N'], true).build());
+  sh.getRange('E2:E500').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['Y','N'], true).build());
+
+  sh.getRange(2, 1, oldRows.length, 6).setValues(oldRows);
+
+  sh.getRange('H1').setValue('使用說明').setFontWeight('bold');
+  sh.getRange('H2').setValue('可填 Y/N，也接受：YES/NO、TRUE/FALSE、1/0、排班/休假、可/不可、是/否。')
+    .setFontColor('#666').setWrap(true);
+
+  toast_('人員設定頁完成：已保留/帶回原資料（空白才放預設名單）');
+}
+
+
+/***** ====== 移工排班（簡化：沒有早晚班；預設上班；可填多種「休」字） ====== *****/
+
+// 建立或重建（B1=年、C1=月；與設定頁脫鉤）
+function Migrant_InitSheet(){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(MIGRANT_SHEET) || ss.insertSheet(MIGRANT_SHEET);
+
+  const now = new Date();
+  const oldY = Number(String(sh.getRange('B1').getValue()).replace(/[^\d]/g,'')) || now.getFullYear();
+  const oldM = Number(String(sh.getRange('C1').getValue()).replace(/[^\d]/g,'')) || (now.getMonth()+1);
+
+  sh.clear();
+  sh.setHiddenGridlines(true).setTabColor('#546E7A');
+
+  // 標頭 + 操作說明（乾淨）
+  sh.getRange(1,1,1,8).setValues([['年','','月','','','操作：預設上班；要排休請把格子改成「休假/休/休息/OFF」。','','']])
+    .setBackground(COLOR_HEAD_BG).setFontColor(COLOR_HEAD_FG).setFontWeight('bold');
+
+  sh.getRange('B1').setValue(oldY);
+  sh.getRange('C1').setValue(oldM).setDataValidation(SpreadsheetApp.newDataValidation().requireNumberBetween(1,12).build());
+
+  _Migrant_RebuildForMonth_();
+  toast_('移工排班就緒（預設上班；支援 休假/休/休息/OFF）');
+}
+
+// 依年/月重建：名稱順序嚴格依「人員設定」出現順序
+function _Migrant_RebuildForMonth_(){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(MIGRANT_SHEET); if (!sh) return;
+
+  const Y = Number(String(sh.getRange('B1').getValue()).replace(/[^\d]/g,'')) || 0;
+  const M = Number(String(sh.getRange('C1').getValue()).replace(/[^\d]/g,'')) || 0;
+  if (!Y || M<1 || M>12){ uiAlert_('請在「移工排班」B1/C1 填入正確的年/月'); return; }
+
+  const people = _readPeople_();                           // 保持原表順序
+  const migrants = people.filter(p => p.group==='移工').map(p=>p.name);
+  _Migrant_DrawSkeleton_Simple_(sh, Y, M, migrants);
+}
+
+function _Migrant_DrawSkeleton_Simple_(sh, Y, M, migrantNames){
+  // 暫存同年月舊值（用標準化日期 key）
+  const old = {};
+  const lastR = sh.getLastRow(), lastC = sh.getLastColumn();
+  if (lastR>=4 && lastC>=2){
+    const vals  = sh.getRange(4,1,lastR-3,lastC).getValues();
+    vals.forEach(row=>{
+      const k = dateKey_(row[0]);
+      if(k) old[k]=row;
+    });
+  }
+
+  // 清表頭 ~ 主體（保留第 1 列）
+  sh.getRange(2,1,500,100).clear();
+
+  // 表頭第 3 列：日期 + 每位移工一組（狀態、備註、spacer）
+  const headers=['日期'];
+  migrantNames.forEach(nm => headers.push(nm,'備註','')); // spacer
+  if (headers[headers.length-1]==='') headers.pop();
+  sh.getRange(3,1,1,headers.length).setValues([headers])
+    .setBackground(COLOR_BAR_BG).setFontWeight('bold').setBorder(true,true,true,true,true,true);
+
+  // 欄寬
+  sh.setColumnWidth(1, 120);
+  let c=2;
+  migrantNames.forEach(()=>{
+    sh.setColumnWidth(c++, 120); // 狀態
+    sh.setColumnWidth(c++, 160); // 備註
+    if (c<=headers.length) sh.setColumnWidth(c++, 20); // spacer
+  });
+
+  // 日期列：用 Date + 指定顯示格式
+  const days = _daysInMonth_(Y,M);
+  const data = [];
+  for (let d=1; d<=days; d++){ data.push([new Date(Y, M-1, d)]); }
+  sh.getRange(4,1,days,1).setValues(data).setNumberFormat('yyyy-mm-dd');
+
+  // 預設全「上班」；提供下拉（休假）
+  for (let i=0;i<migrantNames.length;i++){
+    const col = 2 + i*3;
+    sh.getRange(4,col,days,1).setValue('上班')
+      .setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['上班','休假'], true).setAllowInvalid(true).build());
+  }
+  sh.setFrozenRows(3);
+
+  // 回填舊值（同年月）
+  for (let d=1; d<=days; d++){
+    const key = fmtYMD_(new Date(Y, M-1, d));
+    if (old[key]){
+      const rowVals = old[key];
+      sh.getRange(3+d,2,1,headers.length-1).setValues([rowVals.slice(1, headers.length)]);
+    }
+  }
+
+  // 使用說明（淡色）
+  sh.getRange(2,1).setValue('說明：此頁決定移工每一天是否上班。預設為「上班」，要排休可填：休假 / 休 / 休息 / OFF。')
+    .setFontColor('#666').setWrap(true);
+}
+
+// 讀出每日哪些移工上班（鍵=yyyy-mm-dd；列空白→預設所有移工上班）
+function Migrant_ReadPlan_(Yopt, Mopt){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(MIGRANT_SHEET);
+  if (!sh) return { workSetByDate:{}, migrants:[] };
+
+  const lastR = sh.getLastRow(), lastC = sh.getLastColumn();
+  if (lastR<4 || lastC<2) return { workSetByDate:{}, migrants:[] };
+
+  const heads = sh.getRange(3,1,1,lastC).getValues()[0];
+  const vals  = sh.getRange(4,1,lastR-3,lastC).getValues();
+
+  // 擷取移工名字（第 3 列中每 3 欄一個名字）
+  const migrants=[];
+  for (let c=2;c<=lastC;c+=3){
+    const nm=String(heads[c-1]||'').trim();
+    if(nm) migrants.push(nm);
+  }
+  const allSet = new Set(migrants);
+
+  const workSetByDate={};
+  vals.forEach(row=>{
+    const key = dateKey_(row[0]); if(!key) return;
+    const set = new Set();
+    for (let j=0;j<migrants.length;j++){
+      const c = 2 + j*3;
+      const v = String(row[c]||'').trim();
+      if (isRest_(v)) continue; // 休/休假/休息/OFF
+      set.add(migrants[j]);     // 其餘（含空白/上班）視為上班
+    }
+    workSetByDate[key] = set.size===0 ? new Set(allSet) : set;
+  });
+  return { workSetByDate, migrants };
+}
+
+// 匯出移工排班頁
+function Export_Migrant_ToDrive(){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(MIGRANT_SHEET);
+  if (!sh){ uiAlert_('找不到「移工排班」頁'); return; }
+
+  const Y = Number(String(sh.getRange('B1').getValue()).replace(/[^\d]/g,'')) || 0;
+  const M = Number(String(sh.getRange('C1').getValue()).replace(/[^\d]/g,'')) || 0;
+  if (!Y || M<1 || M>12){ uiAlert_('請在「移工排班」B1/C1 指定正確的年/月'); return; }
+
+  const name = `${MIGRANT_PREFIX}${Y}-${('0'+M).slice(-2)}`;
+  saveSheetToNewSpreadsheet_(sh, MIGRANT_OUT_FOLDER_ID, name);
+  toast_('已輸出「移工排班」至資料夾（同名覆蓋）');
+}
+function _daysInMonth_(Y,M){ return new Date(Y, M, 0).getDate(); }
+
+
+/***** =============== 生成班表（公平 + 依移工排班） =============== *****/
+function Roster_Generate_Fair(){
+  const ss=SpreadsheetApp.getActive();
+  const Y=_getYear_(), M=_getMonth_(); if(!Y||!M){ uiAlert_('設定請填 年/月'); return; }
+  const db=ss.getSheetByName(DB_SHEET); if(!db){ uiAlert_('請先建立 DB'); return; }
+
+  const people = _readPeople_(); if(!people.length){ uiAlert_('人員設定沒有啟用的人'); return; }
+  const taiwan  = people.filter(p=>p.group==='台灣');
+  const migrants= people.filter(p=>p.group==='移工');
+
+  // 依移工排班（若某日沒有記錄→預設所有移工上班）
+  const { workSetByDate: migWorkByDate, migrants: migNames } = Migrant_ReadPlan_(Y,M);
+  const migAllSet = new Set(migNames);
+
+  // 本月假日
+  const days = readMonthDaysFromDB_(Y,M,['週六','國定','補假','補班']);
+  if(!days.length){ uiAlert_('本月沒有 週六/國定/補假/補班'); return; }
+
+  // 歷史休統計（公平：週六只算台灣；國定/補假全員）
+  const hist = collectFairnessCounts_(Y,M);
+  const liveSat={}, liveNat={};
+  people.forEach(p=>{ liveSat[p.name]=hist[p.name]?.sat||0; liveNat[p.name]=hist[p.name]?.nat||0; });
+
+  // 建表
+  const mm=('0'+M).slice(-2), name=`${ROSTER_PREFIX}${Y}-${mm}`;
+  let sh=ss.getSheetByName(name) || ss.insertSheet(name);
+  sh.clear(); sh.setHiddenGridlines(true).setTabColor('#0B8043');
+
+  sh.getRange(1,1,1,2).merge().setValue(`班表 · ${Y}-${mm}`)
+    .setBackground(COLOR_HEAD_BG).setFontColor(COLOR_HEAD_FG).setFontWeight('bold');
+
+  const head=['姓名','群組'];
+  days.forEach(d=>{
+    const zh='日一二三四五六'[d.date.getDay()];
+    head.push(`${d.date.getMonth()+1}/${d.date.getDate()}(${zh}) ${d.type}`);
+  });
+  sh.getRange(2,1,1,head.length).setValues([head])
+    .setBackground(COLOR_BAR_BG).setFontWeight('bold').setBorder(true,true,true,true,true,true);
+  sh.setFrozenRows(2);
+
+  const mobile = !!ss.getRange(MOBILE_CELL).getValue();
+  sh.setColumnWidth(1, mobile? 140:120);
+  sh.setColumnWidth(2, mobile? 140:120);
+  for(let c=3;c<=head.length;c++) sh.setColumnWidth(c, mobile? 110:90);
+  sh.getRange(1,1,2,head.length).setFontSize(mobile? 12:10);
+
+  const out = people.map(p=>[p.name,p.group]);
+
+  days.forEach(d=>{
+    const key = fmtYMD_(d.date);
+
+    if (d.type==='補班'){
+      people.forEach(p=> out.find(r=>r[0]===p.name).push('上班'));
+      return;
+    }
+
+    if (d.type==='週六'){
+      // 移工
+      const workingSet = migWorkByDate[key] ? migWorkByDate[key] : new Set(migAllSet);
+      migrants.forEach(p=>{
+        const v = workingSet.has(p.name) ? '上班' : '休';
+        out.find(r=>r[0]===p.name).push(v);
+      });
+
+      // 台灣：若任何移工上班→台灣需 2 人；否則 3 人
+      const required = workingSet.size>0 ? 2 : 3;
+      const elig = taiwan.filter(p=>yn_(p.satYN));
+      const assigned = Math.min(required, elig.length);
+      const canRest  = Math.max(0, elig.length - assigned);
+
+      const sorted = elig.slice().sort((a,b)=>{
+        const da=(liveSat[a.name]||0)-(liveSat[b.name]||0); if(da) return da;
+        return 0;
+      });
+      const restSet = new Set(sorted.slice(0,canRest).map(p=>p.name));
+
+      taiwan.forEach(p=>{
+        let v='休';
+        if (yn_(p.satYN)) v = restSet.has(p.name)? '休':'上班';
+        if (v==='休') liveSat[p.name]=(liveSat[p.name]||0)+1;
+        out.find(r=>r[0]===p.name).push(v);
+      });
+      return;
+    }
+
+    // 國定 / 補假
+    const workingSet = migWorkByDate[key] ? migWorkByDate[key] : new Set(migAllSet);
+    migrants.forEach(p=>{
+      const v = workingSet.has(p.name) ? '上班' : '休';
+      out.find(r=>r[0]===p.name).push(v);
+      if (v==='休') liveNat[p.name]=(liveNat[p.name]||0)+1;
+    });
+
+    // 台灣：DUTY_NAT_CELL 留空 = 全員上班；填數字 = 公平輪流只排該數
+    const dutyNatRaw = String(ss.getRange(DUTY_NAT_CELL).getValue()).trim();
+    const dutyNat = dutyNatRaw==='' ? null : asNonNegInt_(dutyNatRaw, 0);
+    const eligTW  = taiwan.filter(p=>yn_(p.natYN));
+
+    if (dutyNat === null){
+      // 全員上班
+      taiwan.forEach(p=>{
+        const v = yn_(p.natYN) ? '上班' : '休';
+        out.find(r=>r[0]===p.name).push(v);
+        if (v==='休') liveNat[p.name]=(liveNat[p.name]||0)+1;
+      });
+    }else{
+      const workTW  = Math.min(dutyNat, eligTW.length);
+      const canRest = Math.max(0, eligTW.length - workTW);
+      const sortedTW = eligTW.slice().sort((a,b)=>{
+        const da=(liveNat[a.name]||0)-(liveNat[b.name]||0); if(da) return da;
+        return 0;
+      });
+      const restSetTW = new Set(sortedTW.slice(0,canRest).map(p=>p.name));
+      taiwan.forEach(p=>{
+        let v = (yn_(p.natYN) && !restSetTW.has(p.name)) ? '上班' : '休';
+        out.find(r=>r[0]===p.name).push(v);
+        if (v==='休') liveNat[p.name]=(liveNat[p.name]||0)+1;
+      });
+    }
+  });
+
+  sh.getRange(3,1,out.length,head.length).setValues(out);
+
+  // 手動調整下拉
+  const dv = SpreadsheetApp.newDataValidation().requireValueInList(['上班','休'], true).build();
+  sh.getRange(3,3,out.length,head.length-2).setDataValidation(dv);
+
+  // 著色 + 圖例
+  applyHolidayRosterColors_(sh, out.length, head.length);
+  drawSimpleLegend_(sh);
+
+  // 備註（同步設定頁 NOTE_CELL）
+  const note = String(ss.getRange(NOTE_CELL).getValue()||'').trim();
+  const noteRow = Math.max(5+out.length, 24);
+  sh.getRange(noteRow,1,1,Math.max(6, head.length)).merge().setValue(note || ' 📝 備註：')
+    .setBackground('#fafafa').setWrap(true).setBorder(true,true,true,true,false,false);
+  sh.setRowHeight(noteRow, 120);
+
+  toast_(`完成：${name} · 人數 ${out.length} · 欄位 ${days.length}`);
+}
+
+
+/***** =============== 生成日曆（含週六；名字直排；移除「上班：」字樣） =============== *****/
+function Calendar_BuildLocal(){
+  const ss=SpreadsheetApp.getActive();
+  const Y=_getYear_(), M=_getMonth_(); if(!Y||!M){ uiAlert_('設定請填 年/月'); return; }
+
+  // 人員順序（用於名單排序）
+  const people = _readPeople_();
+  const orderIdx = {}; people.forEach((p,i)=> orderIdx[p.name]=i);
+
+  // 從班表抓「上班」名單（含週六/國定/補假/補班）
+  const rosterName = `${ROSTER_PREFIX}${Y}-${('0'+M).slice(-2)}`;
+  const roster = ss.getSheetByName(rosterName);
+  const workMap = {}; // 'yyyy-mm-dd' -> ['王小明','…']
+  const typeMap = {};
+  if (roster){
+    const lastR=roster.getLastRow(), lastC=roster.getLastColumn();
+    if (lastR>=3 && lastC>=3){
+      const heads = roster.getRange(2,3,1,lastC-2).getValues()[0];
+      const colInfo = heads.map(h=>{
+        const s=String(h||''); const m=/(\d{1,2})\/(\d{1,2}).*?(國定|補假|補班|週六)$/.exec(s);
+        if(!m) return null;
+        const mm=('0'+m[1]).slice(-2), dd=('0'+m[2]).slice(-2), t=m[3];
+        return {key: `${Y}-${mm}-${dd}`, type: t};
+      });
+      const vals = roster.getRange(3,1,lastR-2,lastC).getValues();
+      vals.forEach(row=>{
+        const name=String(row[0]||'').trim(); if(!name) return;
+        for (let c=0;c<colInfo.length;c++){
+          const info=colInfo[c]; if(!info) continue;
+          const v = String(row[2+c]||'').trim();
+          if (v==='上班'){ (workMap[info.key]||(workMap[info.key]=[])).push(name); }
+          if (!typeMap[info.key]) typeMap[info.key]=info.type;
+        }
+      });
+    }
+  }
+  // 名單依「人員設定」順序重排
+  Object.keys(workMap).forEach(k=>{
+    workMap[k].sort((a,b)=> (orderIdx[a]??999) - (orderIdx[b]??999));
+  });
+
+  // 取得月假日（著色）
+  const holidays = readMonthDaysFromDB_(Y,M,['國定','補假','補班','週六']);
+  const hType = {}; // yyyy-mm-dd -> { guoding:[], bujia:[], buban:true, sat:true }
+  holidays.forEach(h=>{
+    const k = fmtYMD_(h.date);
+    if (!hType[k]) hType[k] = {guoding:[], bujia:[], buban:false, sat:false};
+    if (h.type==='國定') hType[k].guoding.push(h.note||'國定');
+    if (h.type==='補假') hType[k].bujia.push(h.note||'補假');
+    if (h.type==='補班') hType[k].buban = true;
+    if (h.type==='週六')  hType[k].sat   = true;
+  });
+
+  // 建/清 日曆頁
+  const name='日曆';
+  let sh=ss.getSheetByName(name) || ss.insertSheet(name);
+  sh.clear();
+  sh.setHiddenGridlines(true).setTabColor('#5B6B7A');
+
+  // 標題
+  sh.getRange(1,1).setValue(`${Y} 年 ${M} 月`).setFontWeight('bold').setFontSize(14).setHorizontalAlignment('left');
+
+  // 欄頭：一～日（7 欄）
+  const days = ['一','二','三','四','五','六','日'];
+  sh.getRange(2,1,1,7).setValues([days])
+    .setFontWeight('bold').setBackground(COLOR_BAR_BG).setBorder(true,true,true,true,true,true);
+
+  // 6×7 格
+  const rows = 6, cols = 7;
+  sh.getRange(3,1,rows,cols).setBorder(true,true,true,true,true,true).setVerticalAlignment('top');
+
+  // 尺寸：格子加高
+  const mobile = !!ss.getRange(MOBILE_CELL).getValue();
+  for(let c=1;c<=cols;c++) sh.setColumnWidth(c, mobile? 130:115);
+  for(let r=3;r<3+rows;r++) sh.setRowHeight(r, mobile? 190:160);
+
+  // 填內容
+  const first = new Date(Y, M-1, 1);
+  const startWeekday = ((first.getDay()+6)%7); // 0..6，0=週一欄
+  const daysInMonth = _daysInMonth_(Y,M);
+
+  for (let d=1, row=0, col=startWeekday; d<=daysInMonth; d++){
+    const key = fmtYMD_(new Date(Y, M-1, d));
+    const a1 = sh.getRange(3+row, 1+col);
+
+    let text = String(d);
+    const tag = [];
+    if ((hType[key]?.guoding||[]).length) tag.push('（'+hType[key].guoding.join('、')+'）');
+    if ((hType[key]?.bujia||[]).length)   tag.push('（'+hType[key].bujia.join('、')+'）');
+    if (hType[key]?.buban)                 tag.push('（補班）');
+    if (tag.length) text += ' ' + tag.join('、');
+
+    // 名字直排（不再顯示「上班：」）
+    const names = workMap[key] || [];
+    if (names.length){
+      text += '\n' + names.map(n => '• ' + n).join('\n');
+    }
+
+    a1.setValue(text).setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP)
+      .setHorizontalAlignment('left').setFontSize(mobile? 12:11);
+
+    // 背景色：國定 > 補假 > 補班 > 週六
+    if ((hType[key]?.guoding||[]).length) a1.setBackground(COLOR_GUODING);
+    else if ((hType[key]?.bujia||[]).length) a1.setBackground(COLOR_BUJIA);
+    else if (hType[key]?.buban) a1.setBackground(COLOR_BUBAN);
+    else if (hType[key]?.sat)   a1.setBackground(COLOR_SAT);
+
+    // 下一格
+    col++; if (col>=7){ col=0; row++; if (row>=rows) break; }
+  }
+
+  // 備註（加高）
+  const note = String(ss.getRange(NOTE_CELL).getValue()||'').trim();
+  const noteStartRow = 3+rows+1;
+  sh.getRange(noteStartRow,1,1,cols).merge().setValue(note || ' 📝 備註：')
+    .setBackground('#fafafa').setWrap(true).setBorder(true,true,true,true,false,false);
+  sh.setRowHeight(noteStartRow, 160);
+
+  toast_('日曆（本檔）完成');
+}
+
+
+/***** =============== 輸出到資料夾（覆蓋） =============== *****/
+function Export_Roster_ToDrive(){
+  const ss=SpreadsheetApp.getActive();
+  const Y=_getYear_(), M=_getMonth_(); if(!Y||!M){ uiAlert_('設定請填 年/月'); return; }
+  const name=`${ROSTER_PREFIX}${Y}-${('0'+M).slice(-2)}`;
+  const sh = ss.getSheetByName(name); if(!sh){ uiAlert_('請先生成班表'); return; }
+  saveSheetToNewSpreadsheet_(sh, ROSTER_FOLDER_ID, name);
+  toast_('已輸出班表至資料夾（覆蓋同名）');
+}
+function Export_Calendar_ToDrive(){
+  const ss=SpreadsheetApp.getActive();
+  const Y=_getYear_(), M=_getMonth_(); if(!Y||!M){ uiAlert_('設定請填 年/月'); return; }
+  Calendar_BuildLocal(); // 確保最新
+  const sh = ss.getSheetByName('日曆'); if(!sh){ uiAlert_('未找到日曆頁'); return; }
+  const name=`${CAL_PREFIX}${Y}-${('0'+M).slice(-2)}`;
+  saveSheetToNewSpreadsheet_(sh, CAL_FOLDER_ID, name);
+  toast_('已輸出日曆至資料夾（覆蓋同名）');
+}
+function Export_Both_ToDrive(){ Export_Roster_ToDrive(); Export_Calendar_ToDrive(); }
+
+
+/***** =============== 統計（不顯示合計休） =============== *****/
+function Stats_Update(){
+  const ss=SpreadsheetApp.getActive();
+  let sh=ss.getSheetByName(STATS_SHEET) || ss.insertSheet(STATS_SHEET);
+  sh.clear().setHiddenGridlines(true).setTabColor('#6D4C41');
+
+  sh.getRange(1,1,1,2).setValues([['年份','月份(空=整年)']]).setBackground(COLOR_BAR_BG).setFontWeight('bold');
+  sh.getRange(2,1,1,2).setBackground('#f5f7fa').setBorder(true,true,true,true,false,false);
+
+  const Y=_getYear_(), M=_getMonth_(true);
+  sh.getRange(2,1).setValue(Y); sh.getRange(2,2).setValue(M||'');
+
+  const folder = getFolderSafe_(ROSTER_FOLDER_ID); if(!folder) return;
+  const it=folder.getFiles(); const files=[];
+  while (it.hasNext()){
+    const f=it.next(); const m=/^班表_(\d{4})-(\d{2})$/.exec(f.getName()); if(!m) continue;
+    const y=+m[1], mo=+m[2]; if (y!==Y) continue; if (M && mo!==M) continue;
+    files.push({id:f.getId(), y, mo});
+  }
+  if(!files.length){ uiAlert_('找不到該年/月的班表檔'); return; }
+  files.sort((a,b)=> a.y!==b.y ? a.y-b.y : a.mo-b.mo);
+
+  const map={}; // name -> {satOff:0, natOff:0, bujiaOff:0}
+  files.forEach(f=>{
+    const wb = SpreadsheetApp.openById(f.id);
+    const sheets = wb.getSheets().filter(s=>/^班表_\d{4}-\d{2}$/.test(s.getName()));
+    if(!sheets.length) return;
+    const s=sheets[0]; const lastR=s.getLastRow(), lastC=s.getLastColumn(); if (lastR<3 || lastC<3) return;
+
+    const heads=s.getRange(2,3,1,lastC-2).getValues()[0];
+    const cats=heads.map(h=>{
+      const t=String(h||'');
+      if (t.endsWith('週六')) return 'sat';
+      if (t.endsWith('國定')) return 'guoding';
+      if (t.endsWith('補假')) return 'bujia';
+      if (t.endsWith('補班')) return 'buban';
+      return '';
+    });
+
+    const vals=s.getRange(3,1,lastR-2,lastC).getValues();
+    vals.forEach(row=>{
+      const nm=String(row[0]||'').trim(); if(!nm) return;
+      if(!map[nm]) map[nm]={satOff:0, natOff:0, bujiaOff:0};
+      for (let c=0;c<cats.length;c++){
+        const cat=cats[c]; if(!cat) continue;
+        const v=String(row[2+c]||'').trim();
+        if (v!=='休') continue;
+        if (cat==='sat') map[nm].satOff++;
+        if (cat==='guoding') map[nm].natOff++;
+        if (cat==='bujia') map[nm].bujiaOff++;
+      }
+    });
+  });
+
+  const rows = Object.keys(map).sort((a,b)=> a.localeCompare(b,'zh-Hant'))
+    .map(n=>[n, map[n].satOff, map[n].natOff, map[n].bujiaOff]);
+  sh.getRange(4,1,1,4).setValues([['姓名','週六休','國定休','補假休']])
+    .setBackground(COLOR_BAR_BG).setFontWeight('bold');
+  if(rows.length) sh.getRange(5,1,rows.length,4).setValues(rows);
+
+  const mobile = !!ss.getRange(MOBILE_CELL).getValue();
+  sh.setColumnWidth(1, mobile? 180:150);
+  sh.setColumnWidth(2, 100); sh.setColumnWidth(3,100); sh.setColumnWidth(4, 100);
+  sh.getRange(4,1,Math.max(2,rows.length+1),4).setBorder(true,true,true,true,true,true);
+  sh.getRange(4,1,rows.length+1,4).setWrap(true);
+
+  // 說明
+  sh.getRange('F1').setValue('說明').setFontWeight('bold');
+  sh.getRange('F2').setValue('此表只計休假次數：週六只算台灣人；國定/補假全員。').setFontColor('#666').setWrap(true);
+
+  toast_('統計已更新');
+}
+
+
+/***** =============== 即時觸發（只同步備註；其餘用「設定→GO」） =============== *****/
+function Setup_Auto(){
+  Remove_Auto();
+  ScriptApp.newTrigger('Auto_OnEdit').forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
+  toast_('已啟用：僅在修改 備註區（A6 起）時，重新寫入班表/日曆備註；生成請在設定頁輸入 GO。');
+}
+function Remove_Auto(){
+  ScriptApp.getProjectTriggers().forEach(t=>{ if(t.getHandlerFunction()==='Auto_OnEdit') ScriptApp.deleteTrigger(t); });
+  toast_('已停用即時同步');
+}
+function Auto_OnEdit(e){
+  if(!e) return;
+  const r=e.range, sh=r.getSheet(), name=sh.getName(), val = r.getValue();
+  try{
+    if (name === '設定'){
+      const a1 = r.getA1Notation();
+      const noteTopLeft = NOTE_CELL.split('!')[1]; // 例如 A6
+
+      // 快速操作：輸入 GO 觸發（事後清空）
+      if (a1==='F2' && String(val).toUpperCase()==='GO'){ Roster_Generate_Fair(); sh.getRange(a1).clearContent(); return; }
+      if (a1==='G2' && String(val).toUpperCase()==='GO'){ Calendar_BuildLocal(); sh.getRange(a1).clearContent(); return; }
+      if (a1==='H2' && String(val).toUpperCase()==='GO'){ Roster_Generate_Fair(); Calendar_BuildLocal(); sh.getRange(a1).clearContent(); return; }
+
+      // 備註：即時同步（只重寫備註框，不重算整張）
+      if (a1===noteTopLeft){
+        _RewriteNoteOnly_('班表_', String(val||''));
+        _RewriteNoteOnly_('日曆', String(val||''), true);
+        return;
+      }
+    }
+    // 移工排班：改年/月即重建骨架
+    if (name === MIGRANT_SHEET && (r.getA1Notation()==='B1' || r.getA1Notation()==='C1')){
+      _Migrant_RebuildForMonth_();
+    }
+  }catch(err){ Logger.log(err); }
+}
+// 只更新備註框（避免整張重算）
+function _RewriteNoteOnly_(sheetPrefix, note, isCalendar){
+  const ss = SpreadsheetApp.getActive();
+  if (isCalendar){
+    const sh = ss.getSheetByName('日曆'); if (!sh) return;
+    const rows=6, cols=7; const noteStartRow = 3+rows+1;
+    sh.getRange(noteStartRow,1,1,cols).merge().setValue(note || ' 📝 備註：');
+    return;
+  }
+  const Y=_getYear_(), M=_getMonth_(); if (!Y||!M) return;
+  const name = `${sheetPrefix}${Y}-${('0'+M).slice(-2)}`;
+  const sh = ss.getSheetByName(name); if (!sh) return;
+  const noteRow = Math.max(5+ (sh.getLastRow()-2), 24);
+  sh.getRange(noteRow,1,1,Math.max(6, sh.getLastColumn())).merge().setValue(note || ' 📝 備註：');
+}
+
+
+/***** =============== 工具：讀 DB / 人員 / 公平統計 =============== *****/
+function readMonthDaysFromDB_(Y,M,types){
+  const ss=SpreadsheetApp.getActive(), db=ss.getSheetByName(DB_SHEET);
+  const set=new Set(Array.isArray(types)? types: [types]);
+  const vals=db.getRange(2,1,db.getLastRow()-1,4).getValues();
+  const out=[];
+  vals.forEach(r=>{
+    const d=r[0], t=r[1], note=r[2];
+    if(!(d instanceof Date)) return;
+    if(d.getFullYear()===Y && (d.getMonth()+1)===M){
+      if(set.has(t)) out.push({date:new Date(d), type:t, note:String(note||'')});
+    }
+  });
+  out.sort((a,b)=> a.date-b.date);
+  return out;
+}
+function _readPeople_(){
+  const ss=SpreadsheetApp.getActive(), sh=ss.getSheetByName(PEOPLE_SHEET);
+  if(!sh) return [];
+  const last=Math.max(sh.getLastRow(),2);
+  const arr=sh.getRange(2,1,last-1,6).getValues(); // 不排序，保留出現順序
+  return arr.filter(r=> r[0]===true && String(r[1]).trim()!=='')
+    .map(r=>({
+      name:String(r[1]).trim(),
+      group:String(r[2]).trim(),
+      satYN: yn_(r[3]) ? 'Y':'N',   // 寬鬆解析
+      natYN: yn_(r[4]) ? 'Y':'N'
+    }));
+}
+
+// 公平統計：讀本檔 + 資料夾既有班表（同年、過去月）
+function collectFairnessCounts_(targetYear, targetMonth){
+  const map={};
+  const ss=SpreadsheetApp.getActive();
+  const sheets=ss.getSheets().map(s=>s.getName()).filter(n=>/^班表_\d{4}-\d{2}$/.test(n)).sort();
+  for (const name of sheets){
+    const m=/^班表_(\d{4})-(\d{2})$/.exec(name); if(!m) continue;
+    const y=+m[1], mo=+m[2];
+    if (y!==targetYear || mo>=targetMonth) continue;
+    _accFromRosterSheet_(ss.getSheetByName(name), map);
+  }
+  const folder = getFolderSafe_(ROSTER_FOLDER_ID);
+  if (folder){
+    const it=folder.getFiles();
+    while (it.hasNext()){
+      const f=it.next(); const mm=/^班表_(\d{4})-(\d{2})$/.exec(f.getName());
+      if (!mm) continue;
+      const y=+mm[1], mo=+mm[2];
+      if (y!==targetYear || mo>=targetMonth) continue;
+      try{
+        const wb = SpreadsheetApp.openById(f.getId());
+        const s = wb.getSheetByName(f.getName());
+        if (s) _accFromRosterSheet_(s, map);
+      }catch(_){}
+    }
+  }
+  return map;
+}
+function _accFromRosterSheet_(s, map){
+  if(!s) return;
+  const lastR=s.getLastRow(), lastC=s.getLastColumn(); if (lastR<3 || lastC<3) return;
+  const heads=s.getRange(2,3,1,lastC-2).getValues()[0];
+  const cats=heads.map(h=>{
+    const t=String(h||'');
+    if (t.indexOf('週六')>=0) return 'sat';
+    if (t.indexOf('國定')>=0 || t.indexOf('補假')>=0) return 'nat';
+    return '';
+  });
+  const vals=s.getRange(3,1,lastR-2,lastC).getValues();
+  vals.forEach(row=>{
+    const nm=String(row[0]||'').trim(); const grp=String(row[1]||'').trim(); if(!nm) return;
+    if(!map[nm]) map[nm]={sat:0,nat:0};
+    for (let c=0;c<cats.length;c++){
+      if (!cats[c]) continue;
+      const v=String(row[2+c]||'').trim();
+      if (v!=='休') continue;
+      if (cats[c]==='sat' && grp==='台灣') map[nm].sat++;
+      if (cats[c]==='nat') map[nm].nat++;
+    }
+  });
+}
+
+
+/***** =============== 輸出工具 / 驗證 / 著色 / 狀態列 / 小工具 =============== *****/
+function saveSheetToNewSpreadsheet_(sheet, folderId, newName){
+  const folder = getFolderSafe_(folderId); if(!folder) return;
+  const existing = folder.getFilesByName(newName);
+  while (existing.hasNext()){ existing.next().setTrashed(true); }
+  const newSS = SpreadsheetApp.create(newName);
+  const newFile = DriveApp.getFileById(newSS.getId());
+  const parent = newFile.getParents(); while (parent.hasNext()){ parent.next().removeFile(newFile); }
+  folder.addFile(newFile);
+
+  const target = newSS.getActiveSheet();
+  target.setName(sheet.getName());
+  const range = sheet.getDataRange();
+  const values = range.getValues(), formats = range.getNumberFormats(), bg = range.getBackgrounds();
+  const fontSizes = range.getFontSizes(), fontWeights = range.getFontWeights();
+  target.clear();
+  target.getRange(1,1,values.length,values[0].length).setValues(values);
+  target.getRange(1,1,formats.length,formats[0].length).setNumberFormats(formats);
+  target.getRange(1,1,bg.length,bg[0].length).setBackgrounds(bg);
+  target.getRange(1,1,fontSizes.length,fontSizes[0].length).setFontSizes(fontSizes);
+  target.getRange(1,1,fontWeights.length,fontWeights[0].length).setFontWeights(fontWeights);
+}
+
+function applyTypeValidation_(sh, dataRows){
+  const n = Math.max(1,(dataRows||1)+BUFFER_ROWS);
+  const rule = SpreadsheetApp.newDataValidation().requireValueInList(['國定','補假','補班','週六'], true).setAllowInvalid(true).build();
+  sh.getRange(4,2,n,1).setDataValidation(rule);
+}
+function applyColorRules_(sh, dataRows){
+  const n=Math.max(1,(dataRows||1)+BUFFER_ROWS), rng=sh.getRange(4,1,n,3);
+  sh.setConditionalFormatRules([
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$B4="國定"').setBackground(COLOR_GUODING).setRanges([rng]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$B4="補假"').setBackground(COLOR_BUJIA).setRanges([rng]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$B4="補班"').setBackground(COLOR_BUBAN).setRanges([rng]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$B4="週六"').setBackground(COLOR_SAT).setRanges([rng]).build(),
+  ]);
+}
+function applyHolidayRosterColors_(sh, rows, cols){
+  const rng = sh.getRange(3,3,Math.max(1,rows),Math.max(1,cols-2));
+  sh.setConditionalFormatRules([
+    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('上班').setBackground(COLOR_WORK).setRanges([rng]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('休').setBackground(COLOR_OFF).setRanges([rng]).build(),
+  ]);
+}
+function drawSimpleLegend_(sh){
+  const col = Math.max(10, sh.getLastColumn()+2);
+  sh.getRange(1,col,1,2).merge().setValue('圖例').setFontWeight('bold');
+  sh.getRange(2,col).setValue('上班'); sh.getRange(2,col+1).setValue(' ').setBackground(COLOR_WORK).setBorder(true,true,true,true,false,false);
+  sh.getRange(3,col).setValue('休');   sh.getRange(3,col+1).setValue(' ').setBackground(COLOR_OFF).setBorder(true,true,true,true,false,false);
+}
+function ApplyStatusFormula_YearOnly_(){
+  const ss=SpreadsheetApp.getActive();
+  const f=`=IFERROR(
+    LET(yTxt,${YEAR_CELL}, yRaw,IFERROR(VALUE(yTxt),""), y,IF(yRaw="","",IF(yRaw<1911,yRaw+1911,yRaw)), roc,IF(yRaw="","",y-1911),
+    rng,IF(yRaw="","",FILTER('${TARGET_SHEET}'!A4:A,'${TARGET_SHEET}'!A4:A<>"")), n,IF(yRaw="","",ROWS(rng)),
+    IF(yRaw="","尚未載入","已載入：民國 "&roc&"（西元 "&y&"） · 全年，共 "&n&" 列　於 "&TEXT(NOW(),"yyyy-mm-dd HH:mm")) ) ,
+  "尚未載入")`;
+  ss.getRange(STATUS_CELL).setFormula(f);
+}
+
+function _getYear_(){
+  const raw=Number(String(SpreadsheetApp.getActive().getRange(YEAR_CELL).getValue()).replace(/[^\d]/g,'')); if(!raw) return null;
+  return raw<1911? raw+1911 : raw;
+}
+function _getMonth_(allowEmpty){
+  const s=String(SpreadsheetApp.getActive().getRange(MONTH_CELL).getValue()).trim();
+  if (!s && allowEmpty) return null;
+  const n=Number(s.replace(/[^\d]/g,'')); return (n>=1 && n<=12)? n : null;
+}
+function getFolderSafe_(id){
+  try { return DriveApp.getFolderById(id); }
+  catch(e){ uiAlert_('讀取資料夾失敗，請確認權限：\n'+e); return null; }
+}
+function toDateObj_(s){
+  if (!s) return null;
+  const t=String(s).trim();
+  let m=/^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t); if(m) return new Date(+m[1],+m[2]-1,+m[3]);
+  m=/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(t); if(m) return new Date(+m[1],+m[2]-1,+m[3]);
+  const d=new Date(t); return isNaN(d)? null : d;
+}
+function fmtYMD_(d){ const mm=('0'+(d.getMonth()+1)).slice(-2), dd=('0'+d.getDate()).slice(-2); return d.getFullYear()+'-'+mm+'-'+dd; }
+function _numOrEmpty_(v){ const n=Number(String(v).replace(/[^\d]/g,'')); return isNaN(n)? '' : n; }
+function asNonNegInt_(v, def){ const n=Number(String(v).replace(/[^\d]/g,'')); return Number.isFinite(n)? Math.max(0,Math.floor(n)) : def; }
+function toast_(m){ SpreadsheetApp.getActive().toast(m,'提示',3); }
+function uiAlert_(m){ SpreadsheetApp.getUi().alert(m); }
+function Grant_Permissions(){ DriveApp.getRootFolder(); toast_('授權 OK'); }
+
+// 工具：字串 → 布林（多語系/多寫法）
+function yn_(v){
+  const s = String(v||'').trim().toLowerCase();
+  if (!s) return false;
+  return ['y','yes','true','1','排班','可','是'].includes(s);
+}
+// 工具：「休」的判斷（移工排班）
+function isRest_(v){
+  const s = String(v||'').trim().toLowerCase();
+  return s==='休' || s==='休假' || s==='休息' || s==='off';
+}
+// 日期 key 標準化（Date 或 文字都轉成 yyyy-mm-dd）
+function dateKey_(v){
+  if (v instanceof Date) return fmtYMD_(v);
+  const d = toDateObj_(v);
+  return d ? fmtYMD_(d) : String(v||'').trim();
+}
