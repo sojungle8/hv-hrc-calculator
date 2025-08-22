@@ -1,0 +1,807 @@
+<html lang="zh-Hant"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HV ↔ HRC 轉換計算機（自動互換，最多一位小數）</title>
+<style>
+  :root{--bg:#0f1115;--card:#151923;--ink:#e8ecf3;--ink-d:#a9b1c3;--grid:#232a3a;--acc:#5ee2a0}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans TC","PingFang TC",sans-serif}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:1.1fr .9fr;gap:20px}
+  @media (max-width:980px){.wrap{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--grid);border-radius:14px;box-shadow:0 6px 18px #00000033}
+  .pad{padding:18px 20px}
+  h1{font-size:20px;margin:0 0 10px}
+  h2{font-size:16px;margin:14px 0 8px}
+  .muted{color:var(--ink-d);font-size:13px}
+  .row{display:grid;grid-template-columns:120px 1fr;align-items:center;gap:10px;margin:12px 0}
+  .lbl{color:var(--ink-d)}
+  input[type="number"]{width:100%;padding:12px;border:1px solid var(--grid);background:#0e121a;color:var(--ink);border-radius:10px;font-size:16px;outline:none}
+  input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{appearance:none;margin:0}
+  .btns{display:flex;gap:8px;flex-wrap:wrap}
+  .btn{padding:8px 12px;border-radius:10px;border:1px solid var(--grid);background:#0e121a;color:var(--ink);cursor:pointer}
+  .btn:hover{border-color:#2d354a}
+  .table-wrap{max-height:260px;overflow:auto;border:1px solid var(--grid);border-radius:10px;margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--grid)}
+  th{position:sticky;top:0;background:#121826;color:#aeb7c8}
+  /* Modal for source code */
+  .modal{position:fixed;inset:0;display:none;background:#00000080;backdrop-filter:blur(2px)}
+  .modal.open{display:flex;align-items:center;justify-content:center}
+  .modal-card{width:min(1000px,92vw);height:min(80vh,840px);background:#0f141f;border:1px solid #2a3246;border-radius:14px;box-shadow:0 10px 30px #00000066;display:flex;flex-direction:column}
+  .modal-h{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #223;gap:8px}
+  .modal-h .ttl{font-size:14px;color:#cbd3e1}
+  .modal-h .actions{display:flex;gap:8px}
+  .modal-h button{padding:6px 10px;border:1px solid #2d354a;background:#111726;color:#e8ecf3;border-radius:8px;cursor:pointer}
+  .modal-b{padding:10px;height:100%;overflow:auto}
+  pre{margin:0;font-size:12px;line-height:1.45;color:#bfe1ff;background:#0b0f18;border-radius:8px;padding:10px;border:1px solid #1e2433;white-space:pre;overflow:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- 左：計算器 -->
+  <section class="card pad">
+    <h1>HV ↔ HRC 轉換計算機</h1>
+    <div class="muted">HRC 20–68 對應 HV（每 1 刻度一筆）＋分段線性插值；輸入任一欄，另一欄自動換算；結果最多顯示一位小數（整數不顯示 .0）。</div>
+
+    <h2>輸入任一欄，另一欄自動換算</h2>
+    <div class="row">
+      <div class="lbl">HRC</div>
+      <div class="btns">
+        <input id="inHRC" type="number" inputmode="decimal" step="0.1" value="50">
+        <button class="btn" data-hrc="-0.5">−0.5</button>
+        <button class="btn" data-hrc="+0.5">+0.5</button>
+        <button class="btn" data-hrc="-0.1">−0.1</button>
+        <button class="btn" data-hrc="+0.1">+0.1</button>
+      </div>
+    </div>
+    <div class="row">
+      <div class="lbl">HV</div>
+      <div class="btns">
+        <input id="inHV" type="number" inputmode="decimal" step="0.1" value="513">
+        <button class="btn" data-hv="-5">−5</button>
+        <button class="btn" data-hv="+5">+5</button>
+        <button class="btn" data-hv="-1">−1</button>
+        <button class="btn" data-hv="+1">+1</button>
+      </div>
+    </div>
+
+    <div class="muted">範圍建議：HRC <b>20–68</b>（對應 HV 約 <b>238–940</b>）。超出時採用鄰段斜率保守外推。</div>
+  </section>
+
+  <!-- 右：原理與對照 -->
+  <aside class="card pad">
+    <h2>計算方式與標準來源</h2>
+    <div class="muted">
+      以 <b>ASTM E140 / ISO 18265</b> 的鋼材（非奧斯田鐵鋼）等效轉換表為基礎，建立
+      <b>HRC 整數 20–68</b> 對應之 <b>HV</b>。整數點採 <b>查表</b>，
+      中間值採 <b>分段線性插值</b>；反向（HV→HRC）以單調表區段尋找＋插值。<br>
+      顯示規則：四捨五入到 1 位小數；若為整數則不顯示 <code>.0</code>。
+    </div>
+
+    <h2 style="margin-top:14px">HRC→HV 對照（整數節點）</h2>
+    <div class="table-wrap">
+      <table aria-label="HRC HV lookup">
+        <thead><tr><th>HRC</th><th>HV</th><th>HRC</th><th>HV</th><th>HRC</th><th>HV</th></tr></thead>
+        <tbody id="tbl"><tr>
+      <td>20</td><td>238</td>
+      <td>37</td><td>363</td>
+      <td>54</td><td>577</td>
+    </tr><tr>
+      <td>21</td><td>243</td>
+      <td>38</td><td>372</td>
+      <td>55</td><td>595</td>
+    </tr><tr>
+      <td>22</td><td>248</td>
+      <td>39</td><td>382</td>
+      <td>56</td><td>613</td>
+    </tr><tr>
+      <td>23</td><td>254</td>
+      <td>40</td><td>392</td>
+      <td>57</td><td>633</td>
+    </tr><tr>
+      <td>24</td><td>260</td>
+      <td>41</td><td>402</td>
+      <td>58</td><td>653</td>
+    </tr><tr>
+      <td>25</td><td>266</td>
+      <td>42</td><td>412</td>
+      <td>59</td><td>674</td>
+    </tr><tr>
+      <td>26</td><td>272</td>
+      <td>43</td><td>423</td>
+      <td>60</td><td>697</td>
+    </tr><tr>
+      <td>27</td><td>279</td>
+      <td>44</td><td>434</td>
+      <td>61</td><td>720</td>
+    </tr><tr>
+      <td>28</td><td>286</td>
+      <td>45</td><td>446</td>
+      <td>62</td><td>746</td>
+    </tr><tr>
+      <td>29</td><td>294</td>
+      <td>46</td><td>458</td>
+      <td>63</td><td>772</td>
+    </tr><tr>
+      <td>30</td><td>302</td>
+      <td>47</td><td>471</td>
+      <td>64</td><td>800</td>
+    </tr><tr>
+      <td>31</td><td>310</td>
+      <td>48</td><td>484</td>
+      <td>65</td><td>832</td>
+    </tr><tr>
+      <td>32</td><td>318</td>
+      <td>49</td><td>498</td>
+      <td>66</td><td>865</td>
+    </tr><tr>
+      <td>33</td><td>327</td>
+      <td>50</td><td>513</td>
+      <td>67</td><td>900</td>
+    </tr><tr>
+      <td>34</td><td>336</td>
+      <td>51</td><td>528</td>
+      <td>68</td><td>940</td>
+    </tr><tr>
+      <td>35</td><td>345</td>
+      <td>52</td><td>544</td>
+      <td></td><td></td>
+    </tr><tr>
+      <td>36</td><td>354</td>
+      <td>53</td><td>560</td>
+      <td></td><td></td>
+    </tr></tbody>
+      </table>
+    </div>
+
+    <h2 style="margin-top:14px">備註 / 原始碼</h2>
+    <div class="muted" style="margin-bottom:8px">
+      - 僅作為表格換算輔助，實測仍受材質、負荷、表層梯度影響。<br>
+      - 需要離線安裝/PWA、螺絲 Core/Case 提示，可再加。
+    </div>
+    <button id="btnSrc" class="btn">🔍 查看完整原始碼</button>
+  </aside>
+</div>
+
+<!-- 原始碼 Modal -->
+<div class="modal open" id="srcModal" aria-hidden="false">
+  <div class="modal-card">
+    <div class="modal-h">
+      <div class="ttl">本頁完整 HTML 原始碼</div>
+      <div class="actions">
+        <button id="btnCopy">複製到剪貼簿</button>
+        <button id="btnClose">關閉</button>
+      </div>
+    </div>
+    <div class="modal-b">
+      <pre id="srcBox"><code>&lt;html lang="zh-Hant"&gt;&lt;head&gt;
+&lt;meta charset="utf-8"&gt;
+&lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;
+&lt;title&gt;HV ↔ HRC 轉換計算機（自動互換，最多一位小數）&lt;/title&gt;
+&lt;style&gt;
+  :root{--bg:#0f1115;--card:#151923;--ink:#e8ecf3;--ink-d:#a9b1c3;--grid:#232a3a;--acc:#5ee2a0}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans TC","PingFang TC",sans-serif}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:1.1fr .9fr;gap:20px}
+  @media (max-width:980px){.wrap{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--grid);border-radius:14px;box-shadow:0 6px 18px #00000033}
+  .pad{padding:18px 20px}
+  h1{font-size:20px;margin:0 0 10px}
+  h2{font-size:16px;margin:14px 0 8px}
+  .muted{color:var(--ink-d);font-size:13px}
+  .row{display:grid;grid-template-columns:120px 1fr;align-items:center;gap:10px;margin:12px 0}
+  .lbl{color:var(--ink-d)}
+  input[type="number"]{width:100%;padding:12px;border:1px solid var(--grid);background:#0e121a;color:var(--ink);border-radius:10px;font-size:16px;outline:none}
+  input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{appearance:none;margin:0}
+  .btns{display:flex;gap:8px;flex-wrap:wrap}
+  .btn{padding:8px 12px;border-radius:10px;border:1px solid var(--grid);background:#0e121a;color:var(--ink);cursor:pointer}
+  .btn:hover{border-color:#2d354a}
+  .table-wrap{max-height:260px;overflow:auto;border:1px solid var(--grid);border-radius:10px;margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--grid)}
+  th{position:sticky;top:0;background:#121826;color:#aeb7c8}
+  /* Modal for source code */
+  .modal{position:fixed;inset:0;display:none;background:#00000080;backdrop-filter:blur(2px)}
+  .modal.open{display:flex;align-items:center;justify-content:center}
+  .modal-card{width:min(1000px,92vw);height:min(80vh,840px);background:#0f141f;border:1px solid #2a3246;border-radius:14px;box-shadow:0 10px 30px #00000066;display:flex;flex-direction:column}
+  .modal-h{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #223;gap:8px}
+  .modal-h .ttl{font-size:14px;color:#cbd3e1}
+  .modal-h .actions{display:flex;gap:8px}
+  .modal-h button{padding:6px 10px;border:1px solid #2d354a;background:#111726;color:#e8ecf3;border-radius:8px;cursor:pointer}
+  .modal-b{padding:10px;height:100%;overflow:auto}
+  pre{margin:0;font-size:12px;line-height:1.45;color:#bfe1ff;background:#0b0f18;border-radius:8px;padding:10px;border:1px solid #1e2433;white-space:pre;overflow:auto}
+&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div class="wrap"&gt;
+  &lt;!-- 左：計算器 --&gt;
+  &lt;section class="card pad"&gt;
+    &lt;h1&gt;HV ↔ HRC 轉換計算機&lt;/h1&gt;
+    &lt;div class="muted"&gt;HRC 20–68 對應 HV（每 1 刻度一筆）＋分段線性插值；輸入任一欄，另一欄自動換算；結果最多顯示一位小數（整數不顯示 .0）。&lt;/div&gt;
+
+    &lt;h2&gt;輸入任一欄，另一欄自動換算&lt;/h2&gt;
+    &lt;div class="row"&gt;
+      &lt;div class="lbl"&gt;HRC&lt;/div&gt;
+      &lt;div class="btns"&gt;
+        &lt;input id="inHRC" type="number" inputmode="decimal" step="0.1" value="50"&gt;
+        &lt;button class="btn" data-hrc="-0.5"&gt;−0.5&lt;/button&gt;
+        &lt;button class="btn" data-hrc="+0.5"&gt;+0.5&lt;/button&gt;
+        &lt;button class="btn" data-hrc="-0.1"&gt;−0.1&lt;/button&gt;
+        &lt;button class="btn" data-hrc="+0.1"&gt;+0.1&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class="row"&gt;
+      &lt;div class="lbl"&gt;HV&lt;/div&gt;
+      &lt;div class="btns"&gt;
+        &lt;input id="inHV" type="number" inputmode="decimal" step="0.1" value="513"&gt;
+        &lt;button class="btn" data-hv="-5"&gt;−5&lt;/button&gt;
+        &lt;button class="btn" data-hv="+5"&gt;+5&lt;/button&gt;
+        &lt;button class="btn" data-hv="-1"&gt;−1&lt;/button&gt;
+        &lt;button class="btn" data-hv="+1"&gt;+1&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+
+    &lt;div class="muted"&gt;範圍建議：HRC &lt;b&gt;20–68&lt;/b&gt;（對應 HV 約 &lt;b&gt;238–940&lt;/b&gt;）。超出時採用鄰段斜率保守外推。&lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;!-- 右：原理與對照 --&gt;
+  &lt;aside class="card pad"&gt;
+    &lt;h2&gt;計算方式與標準來源&lt;/h2&gt;
+    &lt;div class="muted"&gt;
+      以 &lt;b&gt;ASTM E140 / ISO 18265&lt;/b&gt; 的鋼材（非奧斯田鐵鋼）等效轉換表為基礎，建立
+      &lt;b&gt;HRC 整數 20–68&lt;/b&gt; 對應之 &lt;b&gt;HV&lt;/b&gt;。整數點採 &lt;b&gt;查表&lt;/b&gt;，
+      中間值採 &lt;b&gt;分段線性插值&lt;/b&gt;；反向（HV→HRC）以單調表區段尋找＋插值。&lt;br&gt;
+      顯示規則：四捨五入到 1 位小數；若為整數則不顯示 &lt;code&gt;.0&lt;/code&gt;。
+    &lt;/div&gt;
+
+    &lt;h2 style="margin-top:14px"&gt;HRC→HV 對照（整數節點）&lt;/h2&gt;
+    &lt;div class="table-wrap"&gt;
+      &lt;table aria-label="HRC HV lookup"&gt;
+        &lt;thead&gt;&lt;tr&gt;&lt;th&gt;HRC&lt;/th&gt;&lt;th&gt;HV&lt;/th&gt;&lt;th&gt;HRC&lt;/th&gt;&lt;th&gt;HV&lt;/th&gt;&lt;th&gt;HRC&lt;/th&gt;&lt;th&gt;HV&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+        &lt;tbody id="tbl"&gt;&lt;tr&gt;
+      &lt;td&gt;20&lt;/td&gt;&lt;td&gt;238&lt;/td&gt;
+      &lt;td&gt;37&lt;/td&gt;&lt;td&gt;363&lt;/td&gt;
+      &lt;td&gt;54&lt;/td&gt;&lt;td&gt;577&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;21&lt;/td&gt;&lt;td&gt;243&lt;/td&gt;
+      &lt;td&gt;38&lt;/td&gt;&lt;td&gt;372&lt;/td&gt;
+      &lt;td&gt;55&lt;/td&gt;&lt;td&gt;595&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;22&lt;/td&gt;&lt;td&gt;248&lt;/td&gt;
+      &lt;td&gt;39&lt;/td&gt;&lt;td&gt;382&lt;/td&gt;
+      &lt;td&gt;56&lt;/td&gt;&lt;td&gt;613&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;23&lt;/td&gt;&lt;td&gt;254&lt;/td&gt;
+      &lt;td&gt;40&lt;/td&gt;&lt;td&gt;392&lt;/td&gt;
+      &lt;td&gt;57&lt;/td&gt;&lt;td&gt;633&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;24&lt;/td&gt;&lt;td&gt;260&lt;/td&gt;
+      &lt;td&gt;41&lt;/td&gt;&lt;td&gt;402&lt;/td&gt;
+      &lt;td&gt;58&lt;/td&gt;&lt;td&gt;653&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;25&lt;/td&gt;&lt;td&gt;266&lt;/td&gt;
+      &lt;td&gt;42&lt;/td&gt;&lt;td&gt;412&lt;/td&gt;
+      &lt;td&gt;59&lt;/td&gt;&lt;td&gt;674&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;26&lt;/td&gt;&lt;td&gt;272&lt;/td&gt;
+      &lt;td&gt;43&lt;/td&gt;&lt;td&gt;423&lt;/td&gt;
+      &lt;td&gt;60&lt;/td&gt;&lt;td&gt;697&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;27&lt;/td&gt;&lt;td&gt;279&lt;/td&gt;
+      &lt;td&gt;44&lt;/td&gt;&lt;td&gt;434&lt;/td&gt;
+      &lt;td&gt;61&lt;/td&gt;&lt;td&gt;720&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;28&lt;/td&gt;&lt;td&gt;286&lt;/td&gt;
+      &lt;td&gt;45&lt;/td&gt;&lt;td&gt;446&lt;/td&gt;
+      &lt;td&gt;62&lt;/td&gt;&lt;td&gt;746&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;29&lt;/td&gt;&lt;td&gt;294&lt;/td&gt;
+      &lt;td&gt;46&lt;/td&gt;&lt;td&gt;458&lt;/td&gt;
+      &lt;td&gt;63&lt;/td&gt;&lt;td&gt;772&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;30&lt;/td&gt;&lt;td&gt;302&lt;/td&gt;
+      &lt;td&gt;47&lt;/td&gt;&lt;td&gt;471&lt;/td&gt;
+      &lt;td&gt;64&lt;/td&gt;&lt;td&gt;800&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;31&lt;/td&gt;&lt;td&gt;310&lt;/td&gt;
+      &lt;td&gt;48&lt;/td&gt;&lt;td&gt;484&lt;/td&gt;
+      &lt;td&gt;65&lt;/td&gt;&lt;td&gt;832&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;32&lt;/td&gt;&lt;td&gt;318&lt;/td&gt;
+      &lt;td&gt;49&lt;/td&gt;&lt;td&gt;498&lt;/td&gt;
+      &lt;td&gt;66&lt;/td&gt;&lt;td&gt;865&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;33&lt;/td&gt;&lt;td&gt;327&lt;/td&gt;
+      &lt;td&gt;50&lt;/td&gt;&lt;td&gt;513&lt;/td&gt;
+      &lt;td&gt;67&lt;/td&gt;&lt;td&gt;900&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;34&lt;/td&gt;&lt;td&gt;336&lt;/td&gt;
+      &lt;td&gt;51&lt;/td&gt;&lt;td&gt;528&lt;/td&gt;
+      &lt;td&gt;68&lt;/td&gt;&lt;td&gt;940&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;35&lt;/td&gt;&lt;td&gt;345&lt;/td&gt;
+      &lt;td&gt;52&lt;/td&gt;&lt;td&gt;544&lt;/td&gt;
+      &lt;td&gt;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;
+    &lt;/tr&gt;&lt;tr&gt;
+      &lt;td&gt;36&lt;/td&gt;&lt;td&gt;354&lt;/td&gt;
+      &lt;td&gt;53&lt;/td&gt;&lt;td&gt;560&lt;/td&gt;
+      &lt;td&gt;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;
+    &lt;/tr&gt;&lt;/tbody&gt;
+      &lt;/table&gt;
+    &lt;/div&gt;
+
+    &lt;h2 style="margin-top:14px"&gt;備註 / 原始碼&lt;/h2&gt;
+    &lt;div class="muted" style="margin-bottom:8px"&gt;
+      - 僅作為表格換算輔助，實測仍受材質、負荷、表層梯度影響。&lt;br&gt;
+      - 需要離線安裝/PWA、螺絲 Core/Case 提示，可再加。
+    &lt;/div&gt;
+    &lt;button id="btnSrc" class="btn"&gt;🔍 查看完整原始碼&lt;/button&gt;
+  &lt;/aside&gt;
+&lt;/div&gt;
+
+&lt;!-- 原始碼 Modal --&gt;
+&lt;div class="modal" id="srcModal" aria-hidden="true"&gt;
+  &lt;div class="modal-card"&gt;
+    &lt;div class="modal-h"&gt;
+      &lt;div class="ttl"&gt;本頁完整 HTML 原始碼&lt;/div&gt;
+      &lt;div class="actions"&gt;
+        &lt;button id="btnCopy"&gt;複製到剪貼簿&lt;/button&gt;
+        &lt;button id="btnClose"&gt;關閉&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class="modal-b"&gt;
+      &lt;pre id="srcBox"&gt;&lt;code&gt;載入中...&lt;/code&gt;&lt;/pre&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+&lt;/div&gt;
+
+&lt;script&gt;
+/* ===== 轉換表（HRC 20..68 → HV），非奧斯田鐵鋼，等效 ASTM E140/ISO 18265 ===== */
+const HRC_MIN = 20, HRC_MAX = 68;
+const HV_FROM_HRC = [
+  238,243,248,254,260,266,272,279,286,294,302,310,318,327,336,345,354,363,372,382,
+  392,402,412,423,434,446,458,471,484,498,513,528,544,560,577,595,613,633,653,674,
+  697,720,746,772,800,832,865,900,940
+]; // 49 筆：對應 HRC 20..68
+
+/* ===== 數字格式：最多 1 位小數；整數不顯示 .0 ===== */
+function fmt(x){
+  const v = Math.round(x * 10) / 10;         // 四捨五入到 0.1
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
+/* ===== 分段線性插值 ===== */
+function hvFromHrc(hrc){
+  if(!Number.isFinite(hrc)) return NaN;
+  if(hrc &lt;= HRC_MIN){
+    const x0=HRC_MIN, x1=HRC_MIN+1, y0=HV_FROM_HRC[0], y1=HV_FROM_HRC[1];
+    return y0 + (hrc-x0)*(y1-y0)/(x1-x0);
+  }
+  if(hrc &gt;= HRC_MAX){
+    const x0=HRC_MAX-1, x1=HRC_MAX, y0=HV_FROM_HRC.at(-2), y1=HV_FROM_HRC.at(-1);
+    return y0 + (hrc-x0)*(y1-y0)/(x1-x0);
+  }
+  const i = Math.floor(hrc) - HRC_MIN;
+  const x0 = HRC_MIN + i, x1 = x0 + 1;
+  const y0 = HV_FROM_HRC[i], y1 = HV_FROM_HRC[i+1];
+  const t = (hrc - x0) / (x1 - x0);
+  return y0 + t*(y1 - y0);
+}
+
+function hrcFromHv(hv){
+  if(!Number.isFinite(hv)) return NaN;
+  const Y = HV_FROM_HRC;
+  if(hv &lt;= Y[0]){
+    const x0=HRC_MIN, x1=HRC_MIN+1, y0=Y[0], y1=Y[1];
+    return x0 + (hv - y0)*(x1 - x0)/(y1 - y0);
+  }
+  if(hv &gt;= Y.at(-1)){
+    const x0=HRC_MAX-1, x1=HRC_MAX, y0=Y.at(-2), y1=Y.at(-1);
+    return x0 + (hv - y0)*(x1 - x0)/(y1 - y0);
+  }
+  // 二分搜尋 y[i] ≤ hv ≤ y[i+1]
+  let lo=0, hi=Y.length-1;
+  while(lo+1&lt;hi){
+    const mid=(lo+hi)&gt;&gt;1;
+    if(Y[mid] &lt;= hv) lo=mid; else hi=mid;
+  }
+  const i=lo;
+  const x0 = HRC_MIN + i, x1 = x0 + 1;
+  const y0 = Y[i], y1 = Y[i+1];
+  const t = (hv - y0)/(y1 - y0);
+  return x0 + t*(x1 - x0);
+}
+
+/* ===== 互相更新（輸入時不強制格式；失焦時才統一） ===== */
+const inHRC = document.querySelector('#inHRC');
+const inHV  = document.querySelector('#inHV');
+let updating = false;
+let lastValidHRC = 50;
+let lastValidHV  = 513;
+
+// 判斷是否為暫時輸入（允許 '-', '.', '-.', '5.' 等）
+const isTyping = s =&gt; s === '' || s === '-' || s === '.' || s === '-.' || /^-?\d+\.$/.test(s);
+
+function onHRCInput(){
+  if(updating) return;
+  const s = inHRC.value.trim();
+  if(isTyping(s)) return;
+  const v = parseFloat(s);
+  if(Number.isFinite(v)){
+    lastValidHRC = v;
+    updating = true;
+    const hv = hvFromHrc(v);
+    if(Number.isFinite(hv)) inHV.value = String(hv); // 輸入時不同步格式
+    updating = false;
+  }
+}
+function onHVInput(){
+  if(updating) return;
+  const s = inHV.value.trim();
+  if(isTyping(s)) return;
+  const v = parseFloat(s);
+  if(Number.isFinite(v)){
+    lastValidHV = v;
+    updating = true;
+    const h = hrcFromHv(v);
+    if(Number.isFinite(h)) inHRC.value = String(h);
+    updating = false;
+  }
+}
+function onHRCBlur(){
+  const v = parseFloat(inHRC.value);
+  updating = true;
+  if(Number.isFinite(v)){
+    lastValidHRC = v;
+    inHRC.value = fmt(v);
+    const hv = hvFromHrc(v);
+    if(Number.isFinite(hv)){ lastValidHV = hv; inHV.value = fmt(hv); }
+  }else{
+    inHRC.value = fmt(lastValidHRC);
+    const hv = hvFromHrc(lastValidHRC);
+    if(Number.isFinite(hv)){ lastValidHV = hv; inHV.value = fmt(hv); }
+  }
+  updating = false;
+}
+function onHVBlur(){
+  const v = parseFloat(inHV.value);
+  updating = true;
+  if(Number.isFinite(v)){
+    lastValidHV = v;
+    inHV.value = fmt(v);
+    const h = hrcFromHv(v);
+    if(Number.isFinite(h)){ lastValidHRC = h; inHRC.value = fmt(h); }
+  }else{
+    inHV.value = fmt(lastValidHV);
+    const h = hrcFromHv(lastValidHV);
+    if(Number.isFinite(h)){ lastValidHRC = h; inHRC.value = fmt(h); }
+  }
+  updating = false;
+}
+
+/* 綁定事件 */
+inHRC.addEventListener('input', onHRCInput);
+inHV .addEventListener('input', onHVInput);
+inHRC.addEventListener('blur', onHRCBlur);
+inHV .addEventListener('blur', onHVBlur);
+
+/* 快捷按鈕 */
+document.querySelectorAll('[data-hrc]').forEach(btn=&gt;{
+  btn.addEventListener('click', ()=&gt;{
+    const cur = parseFloat(inHRC.value||lastValidHRC);
+    const delta = parseFloat(btn.dataset.hrc);
+    const v = (Number.isFinite(cur)?cur:lastValidHRC) + delta;
+    lastValidHRC = v;
+    updating = true;
+    inHRC.value = fmt(v);
+    const hv = hvFromHrc(v);
+    if(Number.isFinite(hv)) { lastValidHV = hv; inHV.value = fmt(hv); }
+    updating = false;
+  });
+});
+document.querySelectorAll('[data-hv]').forEach(btn=&gt;{
+  btn.addEventListener('click', ()=&gt;{
+    const cur = parseFloat(inHV.value||lastValidHV);
+    const delta = parseFloat(btn.dataset.hv);
+    const v = (Number.isFinite(cur)?cur:lastValidHV) + delta;
+    lastValidHV = v;
+    updating = true;
+    inHV.value = fmt(v);
+    const h = hrcFromHv(v);
+    if(Number.isFinite(h)) { lastValidHRC = h; inHRC.value = fmt(h); }
+    updating = false;
+  });
+});
+
+/* 對照表（右側） */
+(function buildTable(){
+  const tbody = document.querySelector('#tbl');
+  const rows = [];
+  const H = [];
+  for(let h=HRC_MIN; h&lt;=HRC_MAX; h++) H.push(h);
+  const col = Math.ceil(H.length/3);
+  for(let r=0;r&lt;col;r++){
+    const c1=H[r], c2=H[r+col], c3=H[r+col*2];
+    const hv1=c1!=null? fmt(HV_FROM_HRC[c1-HRC_MIN]) : '';
+    const hv2=c2!=null? fmt(HV_FROM_HRC[c2-HRC_MIN]) : '';
+    const hv3=c3!=null? fmt(HV_FROM_HRC[c3-HRC_MIN]) : '';
+    rows.push(`&lt;tr&gt;
+      &lt;td&gt;${c1??''}&lt;/td&gt;&lt;td&gt;${hv1}&lt;/td&gt;
+      &lt;td&gt;${c2??''}&lt;/td&gt;&lt;td&gt;${hv2}&lt;/td&gt;
+      &lt;td&gt;${c3??''}&lt;/td&gt;&lt;td&gt;${hv3}&lt;/td&gt;
+    &lt;/tr&gt;`);
+  }
+  tbody.innerHTML = rows.join('');
+})();
+
+/* 初始同步（避免空白） */
+inHRC.value = fmt(lastValidHRC);
+inHV.value  = fmt(lastValidHV);
+
+/* ===== 查看完整原始碼：將整頁 outerHTML 轉義後顯示在 Modal ===== */
+const btnSrc = document.getElementById('btnSrc');
+const srcModal = document.getElementById('srcModal');
+const srcBox = document.getElementById('srcBox');
+const btnClose = document.getElementById('btnClose');
+const btnCopy = document.getElementById('btnCopy');
+
+// 轉義 HTML
+function escapeHTML(s){
+  return s.replaceAll('&amp;','&amp;amp;').replaceAll('&lt;','&amp;lt;').replaceAll('&gt;','&amp;gt;');
+}
+
+btnSrc.addEventListener('click', ()=&gt;{
+  const html = document.documentElement.outerHTML;
+  srcBox.innerHTML = '&lt;code&gt;'+ escapeHTML(html) +'&lt;/code&gt;';
+  srcModal.classList.add('open');
+  srcModal.setAttribute('aria-hidden','false');
+});
+btnClose.addEventListener('click', ()=&gt;{
+  srcModal.classList.remove('open');
+  srcModal.setAttribute('aria-hidden','true');
+});
+srcModal.addEventListener('click', (e)=&gt;{
+  if(e.target === srcModal){ btnClose.click(); }
+});
+btnCopy.addEventListener('click', async ()=&gt;{
+  const text = document.documentElement.outerHTML;
+  try{
+    await navigator.clipboard.writeText(text);
+    btnCopy.textContent = '已複製！';
+    setTimeout(()=&gt;btnCopy.textContent='複製到剪貼簿',1200);
+  }catch{
+    btnCopy.textContent = '複製失敗';
+    setTimeout(()=&gt;btnCopy.textContent='複製到剪貼簿',1200);
+  }
+});
+&lt;/script&gt;
+
+
+&lt;/body&gt;&lt;/html&gt;</code></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ===== 轉換表（HRC 20..68 → HV），非奧斯田鐵鋼，等效 ASTM E140/ISO 18265 ===== */
+const HRC_MIN = 20, HRC_MAX = 68;
+const HV_FROM_HRC = [
+  238,243,248,254,260,266,272,279,286,294,302,310,318,327,336,345,354,363,372,382,
+  392,402,412,423,434,446,458,471,484,498,513,528,544,560,577,595,613,633,653,674,
+  697,720,746,772,800,832,865,900,940
+]; // 49 筆：對應 HRC 20..68
+
+/* ===== 數字格式：最多 1 位小數；整數不顯示 .0 ===== */
+function fmt(x){
+  const v = Math.round(x * 10) / 10;         // 四捨五入到 0.1
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
+/* ===== 分段線性插值 ===== */
+function hvFromHrc(hrc){
+  if(!Number.isFinite(hrc)) return NaN;
+  if(hrc <= HRC_MIN){
+    const x0=HRC_MIN, x1=HRC_MIN+1, y0=HV_FROM_HRC[0], y1=HV_FROM_HRC[1];
+    return y0 + (hrc-x0)*(y1-y0)/(x1-x0);
+  }
+  if(hrc >= HRC_MAX){
+    const x0=HRC_MAX-1, x1=HRC_MAX, y0=HV_FROM_HRC.at(-2), y1=HV_FROM_HRC.at(-1);
+    return y0 + (hrc-x0)*(y1-y0)/(x1-x0);
+  }
+  const i = Math.floor(hrc) - HRC_MIN;
+  const x0 = HRC_MIN + i, x1 = x0 + 1;
+  const y0 = HV_FROM_HRC[i], y1 = HV_FROM_HRC[i+1];
+  const t = (hrc - x0) / (x1 - x0);
+  return y0 + t*(y1 - y0);
+}
+
+function hrcFromHv(hv){
+  if(!Number.isFinite(hv)) return NaN;
+  const Y = HV_FROM_HRC;
+  if(hv <= Y[0]){
+    const x0=HRC_MIN, x1=HRC_MIN+1, y0=Y[0], y1=Y[1];
+    return x0 + (hv - y0)*(x1 - x0)/(y1 - y0);
+  }
+  if(hv >= Y.at(-1)){
+    const x0=HRC_MAX-1, x1=HRC_MAX, y0=Y.at(-2), y1=Y.at(-1);
+    return x0 + (hv - y0)*(x1 - x0)/(y1 - y0);
+  }
+  // 二分搜尋 y[i] ≤ hv ≤ y[i+1]
+  let lo=0, hi=Y.length-1;
+  while(lo+1<hi){
+    const mid=(lo+hi)>>1;
+    if(Y[mid] <= hv) lo=mid; else hi=mid;
+  }
+  const i=lo;
+  const x0 = HRC_MIN + i, x1 = x0 + 1;
+  const y0 = Y[i], y1 = Y[i+1];
+  const t = (hv - y0)/(y1 - y0);
+  return x0 + t*(x1 - x0);
+}
+
+/* ===== 互相更新（輸入時不強制格式；失焦時才統一） ===== */
+const inHRC = document.querySelector('#inHRC');
+const inHV  = document.querySelector('#inHV');
+let updating = false;
+let lastValidHRC = 50;
+let lastValidHV  = 513;
+
+// 判斷是否為暫時輸入（允許 '-', '.', '-.', '5.' 等）
+const isTyping = s => s === '' || s === '-' || s === '.' || s === '-.' || /^-?\d+\.$/.test(s);
+
+function onHRCInput(){
+  if(updating) return;
+  const s = inHRC.value.trim();
+  if(isTyping(s)) return;
+  const v = parseFloat(s);
+  if(Number.isFinite(v)){
+    lastValidHRC = v;
+    updating = true;
+    const hv = hvFromHrc(v);
+    if(Number.isFinite(hv)) inHV.value = String(hv); // 輸入時不同步格式
+    updating = false;
+  }
+}
+function onHVInput(){
+  if(updating) return;
+  const s = inHV.value.trim();
+  if(isTyping(s)) return;
+  const v = parseFloat(s);
+  if(Number.isFinite(v)){
+    lastValidHV = v;
+    updating = true;
+    const h = hrcFromHv(v);
+    if(Number.isFinite(h)) inHRC.value = String(h);
+    updating = false;
+  }
+}
+function onHRCBlur(){
+  const v = parseFloat(inHRC.value);
+  updating = true;
+  if(Number.isFinite(v)){
+    lastValidHRC = v;
+    inHRC.value = fmt(v);
+    const hv = hvFromHrc(v);
+    if(Number.isFinite(hv)){ lastValidHV = hv; inHV.value = fmt(hv); }
+  }else{
+    inHRC.value = fmt(lastValidHRC);
+    const hv = hvFromHrc(lastValidHRC);
+    if(Number.isFinite(hv)){ lastValidHV = hv; inHV.value = fmt(hv); }
+  }
+  updating = false;
+}
+function onHVBlur(){
+  const v = parseFloat(inHV.value);
+  updating = true;
+  if(Number.isFinite(v)){
+    lastValidHV = v;
+    inHV.value = fmt(v);
+    const h = hrcFromHv(v);
+    if(Number.isFinite(h)){ lastValidHRC = h; inHRC.value = fmt(h); }
+  }else{
+    inHV.value = fmt(lastValidHV);
+    const h = hrcFromHv(lastValidHV);
+    if(Number.isFinite(h)){ lastValidHRC = h; inHRC.value = fmt(h); }
+  }
+  updating = false;
+}
+
+/* 綁定事件 */
+inHRC.addEventListener('input', onHRCInput);
+inHV .addEventListener('input', onHVInput);
+inHRC.addEventListener('blur', onHRCBlur);
+inHV .addEventListener('blur', onHVBlur);
+
+/* 快捷按鈕 */
+document.querySelectorAll('[data-hrc]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const cur = parseFloat(inHRC.value||lastValidHRC);
+    const delta = parseFloat(btn.dataset.hrc);
+    const v = (Number.isFinite(cur)?cur:lastValidHRC) + delta;
+    lastValidHRC = v;
+    updating = true;
+    inHRC.value = fmt(v);
+    const hv = hvFromHrc(v);
+    if(Number.isFinite(hv)) { lastValidHV = hv; inHV.value = fmt(hv); }
+    updating = false;
+  });
+});
+document.querySelectorAll('[data-hv]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const cur = parseFloat(inHV.value||lastValidHV);
+    const delta = parseFloat(btn.dataset.hv);
+    const v = (Number.isFinite(cur)?cur:lastValidHV) + delta;
+    lastValidHV = v;
+    updating = true;
+    inHV.value = fmt(v);
+    const h = hrcFromHv(v);
+    if(Number.isFinite(h)) { lastValidHRC = h; inHRC.value = fmt(h); }
+    updating = false;
+  });
+});
+
+/* 對照表（右側） */
+(function buildTable(){
+  const tbody = document.querySelector('#tbl');
+  const rows = [];
+  const H = [];
+  for(let h=HRC_MIN; h<=HRC_MAX; h++) H.push(h);
+  const col = Math.ceil(H.length/3);
+  for(let r=0;r<col;r++){
+    const c1=H[r], c2=H[r+col], c3=H[r+col*2];
+    const hv1=c1!=null? fmt(HV_FROM_HRC[c1-HRC_MIN]) : '';
+    const hv2=c2!=null? fmt(HV_FROM_HRC[c2-HRC_MIN]) : '';
+    const hv3=c3!=null? fmt(HV_FROM_HRC[c3-HRC_MIN]) : '';
+    rows.push(`<tr>
+      <td>${c1??''}</td><td>${hv1}</td>
+      <td>${c2??''}</td><td>${hv2}</td>
+      <td>${c3??''}</td><td>${hv3}</td>
+    </tr>`);
+  }
+  tbody.innerHTML = rows.join('');
+})();
+
+/* 初始同步（避免空白） */
+inHRC.value = fmt(lastValidHRC);
+inHV.value  = fmt(lastValidHV);
+
+/* ===== 查看完整原始碼：將整頁 outerHTML 轉義後顯示在 Modal ===== */
+const btnSrc = document.getElementById('btnSrc');
+const srcModal = document.getElementById('srcModal');
+const srcBox = document.getElementById('srcBox');
+const btnClose = document.getElementById('btnClose');
+const btnCopy = document.getElementById('btnCopy');
+
+// 轉義 HTML
+function escapeHTML(s){
+  return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+}
+
+btnSrc.addEventListener('click', ()=>{
+  const html = document.documentElement.outerHTML;
+  srcBox.innerHTML = '<code>'+ escapeHTML(html) +'</code>';
+  srcModal.classList.add('open');
+  srcModal.setAttribute('aria-hidden','false');
+});
+btnClose.addEventListener('click', ()=>{
+  srcModal.classList.remove('open');
+  srcModal.setAttribute('aria-hidden','true');
+});
+srcModal.addEventListener('click', (e)=>{
+  if(e.target === srcModal){ btnClose.click(); }
+});
+btnCopy.addEventListener('click', async ()=>{
+  const text = document.documentElement.outerHTML;
+  try{
+    await navigator.clipboard.writeText(text);
+    btnCopy.textContent = '已複製！';
+    setTimeout(()=>btnCopy.textContent='複製到剪貼簿',1200);
+  }catch{
+    btnCopy.textContent = '複製失敗';
+    setTimeout(()=>btnCopy.textContent='複製到剪貼簿',1200);
+  }
+});
+</script>
+
+
+</body></html>
